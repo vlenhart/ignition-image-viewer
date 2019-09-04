@@ -1,4 +1,4 @@
-#Ignition Image Viewer
+# Ignition Image Viewer
 
 This is an image viewer for the 1997 game "Ignition" (known as "Bleifuss Fun" in german speaking countries and "Fun Tracks" in France).
 
