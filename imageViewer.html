@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ignition Image Viewer</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+</head>
+<body>
+
+<p>This is an image viewer for the 1997 game "Ignition" (known as "Bleifuss Fun" in german speaking countries and "Fun Tracks" in France).</p>
+
+Supported file types:
+<ul>
+    <li>.tex - load a .col palette before</li>
+    <li>.pic</li>
+    <li>.lft - these are in the "fonts" directory. the file "ignition.lft" does not work, it seems to be in another format.</li>
+</ul>
+
+<script src="structs.js"></script>
+<script>
+document.create = function (config)
+{
+    var el = document.createElement(config.tag);
+
+    for (var attr in config)
+    {
+        if (!config.hasOwnProperty(attr)) continue;
+        if(attr == "tag") continue;
+
+        el[attr] = config[attr];
+    }
+
+    return el;
+};
+
+Array.prototype.sum = function()
+{
+    return this.reduce(function (a, b)
+    {
+        if(a < 0) a = 0; // @cleanup HACK for small.lft and mini.lft
+        if(b < 0) b = 0; // @cleanup HACK for small.lft and mini.lft
+
+        return a + b;
+    });
+};
+
+function sameValues(a, b)
+{
+    var result = true;
+
+    if(a.length == b.length)
+    {
+        for(var i = 0; i < a.length; ++i)
+        {
+            if(a[i] != b[i])
+            {
+                result = false;
+                break;
+            }
+        }
+    }
+    else
+    {
+        result = false;
+    }
+
+    return result;
+}
+
+var sColorRGB = [
+    { type: "Uint8", name: "r" },
+    { type: "Uint8", name: "g" },
+    { type: "Uint8", name: "b" },
+];
+
+var sColHeader = [
+    { type: "Uint32",  name: "filesize" },
+    { type: "Uint32",  name: "dunno1" }, // 45347?
+    { type: sColorRGB, name: "palette", length: 256 },
+];
+
+var sPicHeader = [
+    { type: "Uint32",  name: "filesize" },
+    { type: "Uint16",  name: "dunno1" },
+    { type: "Uint16",  name: "width" },
+    { type: "Uint16",  name: "height" },
+    { type: "Uint16",  name: "dunno2" },
+    { type: "Uint16",  name: "dunno3" },
+    { type: "Uint8",   name: "junk",    length: 58 },
+    { type: sColorRGB, name: "palette", length: 256 },
+    { type: "Uint32",  name: "imagesize" },
+    { type: "Uint16",  name: "dunno4" }
+];
+
+var charCount = 224;
+var sLftHeader = [
+    { type: 'Uint8',   name: 'magic',    length: 4 }, // "LFT\0"
+    { type: 'Uint16',  name: 'dunno1' }, // always 100. version?
+    { type: 'Uint16',  name: 'charCount' },
+    { type: 'Uint16',  name: 'maxCharWidth' },
+    { type: 'Uint16',  name: 'charHeight' },
+    { type: 'Uint32',  name: 'charOffsets', length: charCount }, // map for all ascii charactes minus the first 32 (beginning with space)
+    { type: sColorRGB, name: 'palette', length: 256 },
+    { type: 'Int16',  name: 'charWidths', length: charCount },
+];
+
+
+function loadPalette(view)
+{
+    var colHeader = view.getStruct(sColHeader, 0, true);
+    return colHeader.palette;
+}
+
+function loadTex(view, palette)
+{
+    var texImageData = new Uint8Array(view.buffer);
+    var width = 256;
+    var height = Math.floor(texImageData.length / 256); // @incomplete: there are some extranious bytes here, what are they for??
+    var pixels = new Uint8ClampedArray(width * height * 4);
+
+    var writeOffset = 0;
+    for(var i = 0; i < texImageData.length; ++i)
+    {
+        var color = palette[texImageData[i]];
+
+        pixels[writeOffset + 0] = color.r; // red
+        pixels[writeOffset + 1] = color.g; // green
+        pixels[writeOffset + 2] = color.b; // blue
+        pixels[writeOffset + 3] = 255;     // alpha
+
+        writeOffset += 4;
+    }
+
+    return {
+        width: width,
+        height: height,
+        pixels: pixels,
+    };
+}
+
+// https://www.inkling.com/read/javascript-definitive-guide-david-flanagan-6th/chapter-22/reading-the-first-four-bytes-of
+// TODO: use drag and drop
+// http://updates.html5rocks.com/2012/07/Drag-and-drop-a-folder-onto-Chrome-now-available
+// http://html5demos.com/dnd-upload
+// this could be interesting:
+// https://github.com/jDataView/jDataView
+
+function loadPic(view)
+{
+    var picHeader = view.getStruct(sPicHeader, 0, true);
+    var values = new Uint8Array(view.buffer, sizeof(sPicHeader))
+    var width = picHeader.width;
+    var height = picHeader.height;
+    var pixels = new Uint8ClampedArray(width * height * 4);
+    var palette = picHeader.palette;
+
+    var writeOffset = 0;
+    for(var i = 0; i < values.length; ++i)
+    {
+        var color = palette[values[i]];
+
+        // test if this is faster
+        // http://jsperf.com/nativememoryoperations-memcpy-test
+        pixels[writeOffset + 0] = color.r; // red
+        pixels[writeOffset + 1] = color.g; // green
+        pixels[writeOffset + 2] = color.b; // blue
+        pixels[writeOffset + 3] = 255;     // alpha
+
+        writeOffset += 4;
+    }
+
+    return {
+        width: width,
+        height: height,
+        pixels: pixels,
+    };
+}
+
+function loadLft(view)
+{
+    if(view.length < sizeof(sLftHeader))
+    {
+        alert("ERROR: invalid file, too small!");
+        return;
+    }
+
+    var lftHeader = view.getStruct(sLftHeader, 0, true);
+
+    if(!sameValues(lftHeader.magic, [ 76, 70, 84, 0 ]))
+    {
+        alert("ERROR: invalid file, magic value is wrong!");
+        return;
+    }
+
+    var values = new Uint8Array(view.buffer, sizeof(sLftHeader))
+    var width = lftHeader.charWidths.sum();
+    var height = lftHeader.charHeight;
+    var pixels = new Uint8ClampedArray(width * height * 4);
+    var palette = lftHeader.palette;
+
+    var firstWriteIndex = 0;
+    for(var charIndex = 0; charIndex < charCount; ++charIndex)
+    {
+        var readOffset = lftHeader.charOffsets[charIndex];
+        var charWidth = lftHeader.charWidths[charIndex];
+
+        if(charWidth == 0) continue;
+        if(charWidth < 0) continue; // @cleanup HACK for small.lft and mini.lft
+
+        var writeIndex = firstWriteIndex;
+        var writeStride = (width - charWidth) * 4;
+
+        for(var y = 0; y < lftHeader.charHeight; ++y)
+        {
+            for(var x = 0; x < charWidth; ++x)
+            {
+                if(readOffset >= values.length) continue; // @incomplete: how can this happen??
+
+                var value = values[readOffset];
+                var color = palette[value];
+
+                pixels[writeIndex + 0] = color.r; // red
+                pixels[writeIndex + 1] = color.g; // green
+                pixels[writeIndex + 2] = color.b; // blue
+                pixels[writeIndex + 3] = 255;     // alpha
+
+                ++readOffset;
+                writeIndex += 4;
+            }
+
+            writeIndex += writeStride;
+        }
+
+        firstWriteIndex += charWidth * 4;
+    }
+
+    return {
+        width: width,
+        height: height,
+        pixels: pixels,
+    };
+}
+
+function drawImage(image)
+{
+    var canvas = document.create({
+        tag: "canvas",
+        width: image.width,
+        height: image.height,
+    });
+    var ctx = canvas.getContext("2d");
+    var imageData = new ImageData(image.pixels, image.width, image.height);
+    ctx.putImageData(imageData, 0, 0);
+    document.body.appendChild(canvas);
+}
+
+var globalPalette = Array(256);
+for(var i = 0; i < globalPalette.length; ++i)
+{
+    globalPalette[i] = {
+        r: i,
+        g: i,
+        b: i,
+    };
+}
+
+/*
+var paletteEntries = 256;
+var globalPalette = new Uint8Array(paletteEntries * 3);
+
+var writeOffset = 0;
+var value = 0;
+while(writeOffset < globalPalette.length)
+{
+    globalPalette[writeOffset + 0] = value;
+    globalPalette[writeOffset + 1] = value;
+    globalPalette[writeOffset + 2] = value;
+
+    writeOffset += 3;
+    ++value;
+}
+*/
+
+function typefile(files)
+{
+    for(var i = 0; i < files.length; ++i)
+    {
+        var file = files[i];
+
+        var extension = file.name.split(".")[1].toLowerCase();
+
+        if(extension == "tex" || extension == "col" || extension == "pic" || extension == "lft")
+        {
+            var reader = new FileReader();
+            reader.onload = function(extension) {
+                return function (e) {
+                    var view = new DataView(e.target.result);
+
+                    switch(extension)
+                    {
+                        case "tex":
+                            var image = loadTex(view, globalPalette);
+                            drawImage(image);
+                            break;
+
+                        case "col":
+                            globalPalette = loadPalette(view);
+                            break;
+
+                        case "pic":
+                            var image = loadPic(view);
+                            drawImage(image);
+                            break;
+
+                        case "lft":
+                            var image = loadLft(view);
+                            drawImage(image);
+                            break;
+
+                        default:
+                            alert("extension " + extension + " is not handled!");
+                    }
+                };
+            }(extension);
+            reader.readAsArrayBuffer(file);
+        }
+        else
+        {
+            alert("file " + file.name + " has an unknown extension!")
+        }
+    }
+}
+
+</script>
+<input type="file" onchange="typefile(this.files)" multiple="multiple"></input>
+
+</body>
+</html>
